@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# VS Code
+.vscode/
+.trae/
+
+# PyInstaller (build artifacts)
+build/
+dist/
+*.spec
+
+# System
+Thumbs.db
+Desktop.ini
