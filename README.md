@@ -3,8 +3,6 @@
 一个基于 Python + Tkinter 开发的轻量级 Windows 悬浮计时器。
 支持正向计时与倒计时，窗口半透明置顶且无边框，适合工作、学习、直播等场景下的时间管理。
 
-![Screenshot](https://via.placeholder.com/600x200?text=Floating+Timer+Screenshot)  
-*(建议上传截图后替换此链接)*
 
 ## ✨ 功能特性
 
