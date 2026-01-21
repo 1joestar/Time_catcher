@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import messagebox
 from dataclasses import dataclass
 from enum import Enum
 from time import perf_counter
@@ -142,17 +143,29 @@ class FloatingTimerApp:
         self._start_text = tk.StringVar(value="开始计时")
         self._compact = False
         self._restore_geometry: str | None = None
+        self._hotkey_values = {
+            "toggle": tk.StringVar(value="Space"),
+            "compact": tk.StringVar(value="Enter"),
+            "reset": tk.StringVar(value="R"),
+        }
+        self._bound_sequences: list[str] = []
+        self._hotkeys_enabled = True
+        self._hotkey_entries: list[tk.Entry] = []
+        self._settings_win: tk.Toplevel | None = None
 
         self._build_window()
         self._build_ui()
+        self._build_settings_window()
         self._bind_events()
         self._sync_ui_from_model()
+        self._apply_hotkeys()
+        self.root.after(200, self._ensure_focus)
 
     def _build_window(self) -> None:
         self.root.title("悬浮计时器")
         self.root.configure(bg=self._bg)
-        self.root.geometry("360x170+1200+80")
-        self.root.minsize(320, 160)
+        self.root.geometry("320x120+1200+80")
+        self.root.minsize(300, 100)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.85)
         self.root.overrideredirect(True)
@@ -188,67 +201,20 @@ class FloatingTimerApp:
         )
         self.close_btn.pack(side="right")
 
-        self.mid = tk.Frame(self.container, bg=self._bg)
-        self.mid.pack(fill="x", padx=10, pady=(8, 0))
-
-        self.mode_up = tk.Radiobutton(
-            self.mid,
-            text=TimerMode.UP.value,
-            value=TimerMode.UP.value,
-            variable=self._mode_var,
+        self.settings_btn = tk.Button(
+            self.top,
+            text="⚙",
             bg=self._bg,
             fg=self._fg,
-            selectcolor=self._bg,
             activebackground=self._bg,
             activeforeground=self._fg,
             bd=0,
-            command=self._on_mode_change,
+            font=("Segoe UI", 12, "bold"),
+            command=self._open_settings,
+            padx=4,
+            pady=0,
         )
-        self.mode_up.pack(side="left")
-
-        self.mode_down = tk.Radiobutton(
-            self.mid,
-            text=TimerMode.DOWN.value,
-            value=TimerMode.DOWN.value,
-            variable=self._mode_var,
-            bg=self._bg,
-            fg=self._fg,
-            selectcolor=self._bg,
-            activebackground=self._bg,
-            activeforeground=self._fg,
-            bd=0,
-            command=self._on_mode_change,
-        )
-        self.mode_down.pack(side="left", padx=(10, 0))
-
-        self.down_cfg = tk.Frame(self.container, bg=self._bg)
-        self.down_cfg.pack(fill="x", padx=10, pady=(6, 0))
-
-        self.hours_entry = tk.Entry(self.down_cfg, width=4, textvariable=self._hours_var, justify="center")
-        self.hours_entry.pack(side="left")
-        tk.Label(self.down_cfg, text="时", bg=self._bg, fg=self._fg).pack(side="left", padx=(4, 8))
-
-        self.minutes_entry = tk.Entry(self.down_cfg, width=4, textvariable=self._minutes_var, justify="center")
-        self.minutes_entry.pack(side="left")
-        tk.Label(self.down_cfg, text="分", bg=self._bg, fg=self._fg).pack(side="left", padx=(4, 8))
-
-        self.seconds_entry = tk.Entry(self.down_cfg, width=4, textvariable=self._seconds_var, justify="center")
-        self.seconds_entry.pack(side="left")
-        tk.Label(self.down_cfg, text="秒", bg=self._bg, fg=self._fg).pack(side="left", padx=(4, 8))
-
-        self.apply_btn = tk.Button(
-            self.down_cfg,
-            text="应用",
-            bg=self._accent,
-            fg="white",
-            activebackground=self._accent,
-            activeforeground="white",
-            bd=0,
-            padx=8,
-            pady=2,
-            command=self._apply_countdown,
-        )
-        self.apply_btn.pack(side="left")
+        self.settings_btn.pack(side="right")
 
         self.bottom = tk.Frame(self.container, bg=self._bg)
         self.bottom.pack(fill="x", padx=10, pady=(8, 10))
@@ -281,6 +247,20 @@ class FloatingTimerApp:
         )
         self.stop_btn.pack(side="left", padx=(8, 0))
 
+        self.compact_btn = tk.Button(
+            self.bottom,
+            text="简洁模式",
+            bg="#111827",
+            fg="white",
+            activebackground="#111827",
+            activeforeground="white",
+            bd=0,
+            padx=10,
+            pady=4,
+            command=self._toggle_compact,
+        )
+        self.compact_btn.pack(side="right")
+
         self.reset_btn = tk.Button(
             self.bottom,
             text="归位",
@@ -293,14 +273,125 @@ class FloatingTimerApp:
             pady=4,
             command=self._on_reset,
         )
-        self.reset_btn.pack(side="right")
+        self.reset_btn.pack(side="right", padx=(0, 8))
+
+    def _build_settings_window(self) -> None:
+        self._settings_win = tk.Toplevel(self.root)
+        self._settings_win.title("设置")
+        self._settings_win.configure(bg=self._bg)
+        self._settings_win.attributes("-topmost", True)
+        self._settings_win.geometry("320x260+1200+260")
+        self._settings_win.withdraw()
+        self._settings_win.protocol("WM_DELETE_WINDOW", self._close_settings)
+
+        container = tk.Frame(self._settings_win, bg=self._bg)
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        mode_frame = tk.Frame(container, bg=self._bg)
+        mode_frame.pack(fill="x", pady=(0, 8))
+        tk.Label(mode_frame, text="计时模式", bg=self._bg, fg=self._fg).pack(side="left")
+        self.mode_up = tk.Radiobutton(
+            mode_frame,
+            text=TimerMode.UP.value,
+            value=TimerMode.UP.value,
+            variable=self._mode_var,
+            bg=self._bg,
+            fg=self._fg,
+            selectcolor=self._bg,
+            activebackground=self._bg,
+            activeforeground=self._fg,
+            bd=0,
+            command=self._on_mode_change,
+        )
+        self.mode_up.pack(side="left", padx=(10, 0))
+        self.mode_down = tk.Radiobutton(
+            mode_frame,
+            text=TimerMode.DOWN.value,
+            value=TimerMode.DOWN.value,
+            variable=self._mode_var,
+            bg=self._bg,
+            fg=self._fg,
+            selectcolor=self._bg,
+            activebackground=self._bg,
+            activeforeground=self._fg,
+            bd=0,
+            command=self._on_mode_change,
+        )
+        self.mode_down.pack(side="left", padx=(10, 0))
+
+        time_frame = tk.Frame(container, bg=self._bg)
+        time_frame.pack(fill="x", pady=(0, 8))
+        tk.Label(time_frame, text="倒计时", bg=self._bg, fg=self._fg).pack(side="left")
+        self.hours_entry = tk.Entry(time_frame, width=4, textvariable=self._hours_var, justify="center")
+        self.hours_entry.pack(side="left", padx=(10, 0))
+        tk.Label(time_frame, text="时", bg=self._bg, fg=self._fg).pack(side="left", padx=(4, 8))
+        self.minutes_entry = tk.Entry(time_frame, width=4, textvariable=self._minutes_var, justify="center")
+        self.minutes_entry.pack(side="left")
+        tk.Label(time_frame, text="分", bg=self._bg, fg=self._fg).pack(side="left", padx=(4, 8))
+        self.seconds_entry = tk.Entry(time_frame, width=4, textvariable=self._seconds_var, justify="center")
+        self.seconds_entry.pack(side="left")
+        tk.Label(time_frame, text="秒", bg=self._bg, fg=self._fg).pack(side="left", padx=(4, 8))
+
+        self.apply_btn = tk.Button(
+            container,
+            text="应用时间",
+            bg=self._accent,
+            fg="white",
+            activebackground=self._accent,
+            activeforeground="white",
+            bd=0,
+            padx=10,
+            pady=4,
+            command=self._apply_countdown,
+        )
+        self.apply_btn.pack(anchor="w", pady=(0, 8))
+
+        hotkey_frame = tk.Frame(container, bg=self._bg)
+        hotkey_frame.pack(fill="x", pady=(0, 8))
+        tk.Label(hotkey_frame, text="开始/停止", bg=self._bg, fg=self._fg).grid(row=0, column=0, sticky="w")
+        toggle_entry = tk.Entry(hotkey_frame, textvariable=self._hotkey_values["toggle"], width=12, justify="center")
+        toggle_entry.grid(row=0, column=1, pady=4, padx=(10, 0))
+        tk.Label(hotkey_frame, text="简洁模式", bg=self._bg, fg=self._fg).grid(row=1, column=0, sticky="w")
+        compact_entry = tk.Entry(hotkey_frame, textvariable=self._hotkey_values["compact"], width=12, justify="center")
+        compact_entry.grid(row=1, column=1, pady=4, padx=(10, 0))
+        tk.Label(hotkey_frame, text="归位", bg=self._bg, fg=self._fg).grid(row=2, column=0, sticky="w")
+        reset_entry = tk.Entry(hotkey_frame, textvariable=self._hotkey_values["reset"], width=12, justify="center")
+        reset_entry.grid(row=2, column=1, pady=4, padx=(10, 0))
+
+        self._hotkey_entries = [toggle_entry, compact_entry, reset_entry]
+
+        btn_row = tk.Frame(container, bg=self._bg)
+        btn_row.pack(fill="x", pady=(8, 0))
+        tk.Button(
+            btn_row,
+            text="应用快捷键",
+            bg=self._accent,
+            fg="white",
+            activebackground=self._accent,
+            activeforeground="white",
+            bd=0,
+            padx=12,
+            pady=4,
+            command=self._apply_hotkeys_with_validate,
+        ).pack(side="left")
+        tk.Button(
+            btn_row,
+            text="关闭",
+            bg="#111827",
+            fg="white",
+            activebackground="#111827",
+            activeforeground="white",
+            bd=0,
+            padx=12,
+            pady=4,
+            command=self._close_settings,
+        ).pack(side="left", padx=(8, 0))
+
+        self._prioritize_all_bindings_for_entries()
 
     def _bind_events(self) -> None:
         self.root.bind("<Escape>", lambda _e: self.root.destroy())
-        self.root.bind("<space>", lambda _e: self._toggle_start_stop())
-        self.root.bind("<Return>", lambda _e: self._toggle_compact())
-        self.root.bind("<Key-r>", lambda _e: self._on_reset())
-        self.root.bind("<Key-R>", lambda _e: self._on_reset())
+        self.root.bind("<FocusIn>", lambda _e: self._ensure_focus())
 
         for widget in (self.container, self.time_label):
             widget.bind("<ButtonPress-1>", self._on_drag_start)
@@ -338,14 +429,140 @@ class FloatingTimerApp:
         self._apply_countdown()
         return "break"
 
+    def _ensure_focus(self) -> None:
+        try:
+            if self.root.focus_get() is None:
+                self.root.lift()
+                self.root.focus_force()
+        except Exception:
+            pass
+
+    def _prioritize_all_bindings_for_entries(self) -> None:
+        for e in (self.hours_entry, self.minutes_entry, self.seconds_entry):
+            tags = list(e.bindtags())
+            if "all" in tags:
+                try:
+                    tags.remove("all")
+                except ValueError:
+                    pass
+                tags.insert(0, "all")
+                e.bindtags(tuple(tags))
+
+    def _normalize_hotkey(self, text: str) -> str | None:
+        value = text.strip()
+        if not value:
+            return None
+        if value.startswith("<") and value.endswith(">"):
+            return value
+        tokens = [token.strip() for token in value.replace(" ", "").split("+") if token.strip()]
+        if not tokens:
+            return None
+        modifiers: list[str] = []
+        key = tokens[-1]
+        for token in tokens[:-1]:
+            name = token.lower()
+            if name in ("ctrl", "control"):
+                modifiers.append("Control")
+            elif name == "shift":
+                modifiers.append("Shift")
+            elif name == "alt":
+                modifiers.append("Alt")
+            else:
+                return None
+        key_name = key.lower()
+        if key_name in ("space",):
+            key_sym = "space"
+        elif key_name in ("enter", "return"):
+            key_sym = "Return"
+        elif key_name in ("esc", "escape"):
+            key_sym = "Escape"
+        elif len(key) == 1:
+            key_sym = key.lower()
+        else:
+            key_sym = key
+        if modifiers:
+            return f"<{'-'.join(modifiers)}-{key_sym}>"
+        return f"<{key_sym}>"
+
+    def _apply_hotkeys(self) -> None:
+        for sequence in self._bound_sequences:
+            self.root.unbind_all(sequence)
+        self._bound_sequences = []
+
+        if not self._hotkeys_enabled:
+            return
+
+        toggle_seq = self._normalize_hotkey(self._hotkey_values["toggle"].get())
+        compact_seq = self._normalize_hotkey(self._hotkey_values["compact"].get())
+        reset_seq = self._normalize_hotkey(self._hotkey_values["reset"].get())
+
+        if toggle_seq:
+            self.root.bind_all(toggle_seq, self._on_toggle_hotkey)
+            self._bound_sequences.append(toggle_seq)
+        if compact_seq:
+            self.root.bind_all(compact_seq, self._on_compact_hotkey)
+            self._bound_sequences.append(compact_seq)
+        if reset_seq:
+            self.root.bind_all(reset_seq, self._on_reset_hotkey)
+            self._bound_sequences.append(reset_seq)
+
+    def _on_toggle_hotkey(self, _event: tk.Event) -> str:
+        self._toggle_start_stop()
+        return "break"
+
+    def _on_reset_hotkey(self, _event: tk.Event) -> str:
+        self._on_reset()
+        return "break"
+
+    def _on_compact_hotkey(self, _event: tk.Event) -> str | None:
+        focused = self.root.focus_get()
+        if focused in (self.hours_entry, self.minutes_entry, self.seconds_entry):
+            self._apply_countdown()
+            if self.model.state == TimerState.IDLE:
+                return "break"
+        self._toggle_compact()
+        return None
+
+    def _open_settings(self) -> None:
+        if self._settings_win is None:
+            return
+        self._set_hotkeys_enabled(False)
+        self._settings_win.deiconify()
+        self._settings_win.lift()
+        self._settings_win.focus_force()
+
+    def _apply_hotkeys_with_validate(self) -> None:
+        toggle_seq = self._normalize_hotkey(self._hotkey_values["toggle"].get())
+        compact_seq = self._normalize_hotkey(self._hotkey_values["compact"].get())
+        reset_seq = self._normalize_hotkey(self._hotkey_values["reset"].get())
+        if not toggle_seq or not compact_seq or not reset_seq:
+            messagebox.showerror("快捷键设置", "请输入有效按键，如 Space / Enter / R 或 Ctrl+Shift+S")
+            return
+        if len({toggle_seq, compact_seq, reset_seq}) != 3:
+            messagebox.showerror("快捷键设置", "快捷键重复，请设置不同的按键")
+            return
+        self._apply_hotkeys()
+
+    def _close_settings(self) -> None:
+        if self._settings_win is None:
+            return
+        self._settings_win.withdraw()
+        self._set_hotkeys_enabled(True)
+
+    def _set_hotkeys_enabled(self, enabled: bool) -> None:
+        self._hotkeys_enabled = enabled
+        self._apply_hotkeys()
+
     def _toggle_compact(self) -> None:
         if not self._compact:
             self._compact = True
             self._restore_geometry = self.root.geometry()
             self.close_btn.pack_forget()
-            self.mid.pack_forget()
-            self.down_cfg.pack_forget()
+            self.settings_btn.pack_forget()
             self.bottom.pack_forget()
+            self.time_label.pack_forget()
+            self.time_label.pack(expand=True)
+            self.top.pack_configure(pady=(8, 8))
             x = self.root.winfo_x()
             y = self.root.winfo_y()
             self.root.minsize(200, 70)
@@ -354,11 +571,13 @@ class FloatingTimerApp:
             self._compact = False
             if self._restore_geometry:
                 self.root.geometry(self._restore_geometry)
-            self.root.minsize(320, 160)
+            self.root.minsize(300, 100)
             self.close_btn.pack(side="right")
-            self.mid.pack(fill="x", padx=10, pady=(8, 0))
-            self.down_cfg.pack(fill="x", padx=10, pady=(6, 0))
+            self.settings_btn.pack(side="right")
             self.bottom.pack(fill="x", padx=10, pady=(8, 10))
+            self.time_label.pack_forget()
+            self.time_label.pack(side="left", anchor="w")
+            self.top.pack_configure(pady=(8, 0))
         self._sync_ui_from_model()
 
     def _apply_countdown(self) -> None:
@@ -391,6 +610,7 @@ class FloatingTimerApp:
             self.model.resume(now)
         else:
             self.model.start(now)
+        self.root.focus_set()
         self._ensure_update_loop()
         self._sync_ui_from_model()
 
